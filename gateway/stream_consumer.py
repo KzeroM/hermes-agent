@@ -343,6 +343,11 @@ class GatewayStreamConsumer:
             meta["reply_to_message_id"] = self._initial_reply_to_id
         if expect_edits:
             meta["expect_edits"] = True
+        # Stream previews/progress are never user-final events.  Type them at
+        # the stream boundary so they cannot inherit a final/user event from
+        # surrounding turn metadata.
+        meta["delivery_event_kind"] = "progress"
+        meta["delivery_event_channel"] = "internal"
         if final:
             meta["notify"] = True
             # Final gateway responses are explicitly typed so they can pass
