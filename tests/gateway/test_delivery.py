@@ -11,6 +11,12 @@ from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.session import SessionSource
 
 
+FINAL_METADATA = {
+    "delivery_event_kind": "final",
+    "delivery_event_channel": "user",
+}
+
+
 class TestParseTargetPlatformChat:
     def test_explicit_telegram_chat(self):
         target = DeliveryTarget.parse("telegram:12345")
@@ -233,7 +239,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
 
-    await router._deliver_to_platform(target, "hello", metadata=None)
+    await router._deliver_to_platform(target, "hello", metadata=FINAL_METADATA)
 
     assert adapter.ensure_dm_topic_calls == [
         {"chat_id": "722341991", "topic_name": "Hermes API Test", "force_create": False}
@@ -243,6 +249,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
             "chat_id": "722341991",
             "content": "hello",
             "metadata": {
+                **FINAL_METADATA,
                 "thread_id": "38049",
                 "telegram_dm_topic_created_for_send": True,
             },
@@ -260,7 +267,7 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
     await router._deliver_to_platform(
         target,
         "hello",
-        metadata={"telegram_reply_to_message_id": "9001"},
+        metadata={**FINAL_METADATA, "telegram_reply_to_message_id": "9001"},
     )
 
     assert adapter.calls == [
@@ -268,12 +275,39 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
             "chat_id": "722341991",
             "content": "hello",
             "metadata": {
+                **FINAL_METADATA,
                 "telegram_reply_to_message_id": "9001",
                 "thread_id": "32344",
                 "telegram_dm_topic_reply_fallback": True,
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_router_rejects_missing_typed_event(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    result = await router._deliver_to_platform(
+        DeliveryTarget.parse("telegram:123"), "looks like a final answer", metadata=None
+    )
+    assert result == {"success": True, "filtered": "missing_typed_event", "delivered": False}
+    assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_router_rejects_unknown_typed_event(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    result = await router._deliver_to_platform(
+        DeliveryTarget.parse("telegram:123"),
+        "looks like a final answer",
+        metadata={"delivery_event_kind": "status", "delivery_event_channel": "internal"},
+    )
+    assert result == {"success": True, "filtered": "typed_event", "delivered": False}
+    assert adapter.calls == []
 
 
 class FailingAdapter:
@@ -327,5 +361,4 @@ async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypa
     saved_files = list(tmp_path.glob("cron/output/job1_*.txt"))
     assert len(saved_files) == 1
     assert saved_files[0].read_text() == long_content
-
 

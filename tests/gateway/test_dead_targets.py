@@ -76,13 +76,17 @@ async def test_forbidden_marks_target_dead_then_short_circuits(isolate):
     target = DeliveryTarget.parse("telegram:42")
 
     # First delivery: send raises Forbidden -> failure + target recorded dead.
-    res1 = await router.deliver("hi", [target])
+    res1 = await router.deliver(
+        "hi", [target], metadata={"delivery_event_kind": "final", "delivery_event_channel": "user"}
+    )
     assert res1["telegram:42"]["success"] is False
     assert router.dead_targets.is_dead("telegram", "42") is True
     assert adapter.calls == ["42"]  # adapter was invoked once
 
     # Second delivery: short-circuited, adapter NOT called again.
-    res2 = await router.deliver("hi again", [target])
+    res2 = await router.deliver(
+        "hi again", [target], metadata={"delivery_event_kind": "final", "delivery_event_channel": "user"}
+    )
     assert res2["telegram:42"]["skipped"] == "dead_target"
     assert res2["telegram:42"]["success"] is False
     assert adapter.calls == ["42"]  # still only the original call
@@ -143,5 +147,4 @@ class TestNotFoundBlastRadius:
 
         # Conservative: if a sub-chat marker is present, never kill the whole chat.
         assert is_chat_level_not_found(error_text="chat not found; message thread not found") is False
-
 

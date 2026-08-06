@@ -141,16 +141,11 @@ class TestPlatformDefaults:
 
 
     def test_telegram_mobile_chatter_defaults(self):
-        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
-        but skips the verbose busy-ack iteration counter by default."""
+        """Telegram defaults to final responses and approved alerts only."""
         from gateway.display_config import resolve_display_setting
 
-        # Real model voice — keep on. Without this, Telegram users see
-        # "typing..." for the entire turn duration with no feedback.
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
-        # Periodic "Working — N min" heartbeat — keep on. Otherwise long
-        # turns appear completely silent.
-        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
         # Verbose iteration counter in busy-ack and heartbeat — off by
         # default on Telegram (mobile chat is cramped enough without
         # "iteration 21/60" debug detail).
@@ -300,5 +295,4 @@ class TestLiveStatusSetting:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "slack", "live_status") == "full"
-
 

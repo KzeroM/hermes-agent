@@ -345,6 +345,10 @@ class GatewayStreamConsumer:
             meta["expect_edits"] = True
         if final:
             meta["notify"] = True
+            # Final gateway responses are explicitly typed so they can pass
+            # the same Telegram delivery policy as cron/router sends.
+            meta["delivery_event_kind"] = "final"
+            meta["delivery_event_channel"] = "user"
         return meta or None
 
     @property

@@ -57,6 +57,7 @@ def _is_silence_narration(content: Optional[str]) -> bool:
 from .config import Platform, GatewayConfig, PlatformConfig
 from .session import SessionSource
 from .dead_targets import DeadTargetRegistry
+from .event_delivery_policy import DeliveryEvent, event_from_metadata, should_deliver
 
 
 @dataclass(frozen=True)
@@ -544,6 +545,15 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
+        typed_event = event_from_metadata(send_metadata)
+        if typed_event is None:
+            if target.platform == Platform.TELEGRAM:
+                logger.info("Rejected untyped Telegram outbound event")
+                return {"success": True, "filtered": "missing_typed_event", "delivered": False}
+            typed_event = DeliveryEvent("final", "user")
+        if not should_deliver(target.platform, typed_event):
+            logger.info("Suppressed typed outbound event %s to %s", typed_event.kind, target.platform.value)
+            return {"success": True, "filtered": "typed_event", "delivered": False}
         if transport.is_relay:
             home = self.config.get_home_channel(target.platform)
             if home is not None and home.chat_id == target.chat_id:
@@ -640,7 +650,3 @@ class DeliveryRouter:
             if _send_result_failed(result):
                 raise RuntimeError(_send_result_error(result) or f"{target.platform.value} delivery failed")
         return result
-
-
-
-
