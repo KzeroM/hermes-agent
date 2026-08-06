@@ -130,6 +130,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "telegram":    {
         **_TIER_HIGH,
         "tool_progress": "off",
+        "show_reasoning": False,
+        "interim_assistant_messages": False,
+        "thinking_progress": False,
+        "long_running_notifications": False,
         "busy_ack_detail": False,
     },
     # Discord has a native "subtext" primitive (-# small grey text) that reads

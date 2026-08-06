@@ -1265,7 +1265,14 @@ DEFAULT_CONFIG = {
         # streaming.enabled master switch still gates everything — these
         # per-platform flags only take effect once streaming is enabled.
         "platforms": {
-            "telegram": {"streaming": True},
+            "telegram": {
+                "streaming": True,
+                "tool_progress": "off",
+                "show_reasoning": False,
+                "interim_assistant_messages": False,
+                "thinking_progress": False,
+                "long_running_notifications": False,
+            },
             "discord": {"streaming": False},
             "slack": {"streaming": False},
         },

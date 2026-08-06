@@ -14,6 +14,72 @@ from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
 
+def test_cron_event_classification_uses_existing_job_state():
+    from cron.scheduler import _cron_delivery_event_metadata
+
+    assert _cron_delivery_event_metadata(
+        {"id": "job"}, success=False, error="CronPromptInjectionBlocked: unsafe prompt",
+    )["delivery_event_kind"] == "cron.blocker"
+    assert _cron_delivery_event_metadata(
+        {"id": "job"}, success=False, error="provider timeout",
+    )["delivery_event_kind"] == "cron.failure"
+    assert _cron_delivery_event_metadata(
+        {"id": "job", "last_status": "error"}, success=True, error=None,
+    )["delivery_event_kind"] == "cron.recovered"
+
+
+def test_deliver_result_live_router_carries_typed_cron_event(monkeypatch):
+    """Exercise _deliver_result through DeliveryRouter with a fake adapter."""
+    from concurrent.futures import Future
+    import asyncio
+    from gateway.config import Platform
+    from gateway.event_delivery_policy import event_metadata, DeliveryEvent
+    from gateway.platforms.base import SendResult
+
+    class FakeTelegram:
+        def __init__(self):
+            self.calls = []
+
+        async def send(self, chat_id, content, metadata=None):
+            self.calls.append((chat_id, content, dict(metadata or {})))
+            return SendResult(success=True, message_id="m1")
+
+    adapter = FakeTelegram()
+    pconfig = MagicMock(enabled=True)
+    gateway_config = MagicMock()
+    gateway_config.platforms = {Platform.TELEGRAM: pconfig}
+    loop = MagicMock()
+    loop.is_running.return_value = True
+
+    def run_coro(coro, _loop):
+        future = Future()
+        try:
+            future.set_result(asyncio.run(coro))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: gateway_config)
+    monkeypatch.setattr("cron.scheduler.load_config", lambda: {"cron": {"wrap_response": False}})
+    monkeypatch.setattr("asyncio.run_coroutine_threadsafe", run_coro)
+    job = {"id": "cron-live", "deliver": "origin", "origin": {"platform": "telegram", "chat_id": "123"}}
+
+    result = _deliver_result(
+        job,
+        "operational alert",
+        adapters={Platform.TELEGRAM: adapter},
+        loop=loop,
+        delivery_event_metadata=event_metadata(
+            DeliveryEvent("cron.failure", "alert", alert_kind="cron.failure")
+        ),
+    )
+
+    assert result is None
+    assert len(adapter.calls) == 1
+    assert adapter.calls[0][2]["delivery_event_kind"] == "cron.failure"
+    assert adapter.calls[0][2]["delivery_event_channel"] == "alert"
+
+
 class TestPerJobToolsetMcpMerge:
     """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
 

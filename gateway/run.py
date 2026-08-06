@@ -65,6 +65,12 @@ from agent.turn_context import (
 )
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.event_delivery_policy import (
+    DeliveryEvent,
+    TELEGRAM_ALERT_KINDS,
+    TelegramDeliveryGate,
+    event_metadata,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -3696,6 +3702,7 @@ class TurnRunner:
         if (
             ctx._live_status_adapter is not None
             and ctx._live_status_mode != "off"
+            and ctx.source.platform != Platform.TELEGRAM
             and tool_name != "_thinking"
         ):
             try:
@@ -3953,6 +3960,13 @@ class TurnRunner:
         if not adapter:
             return
 
+        # Keep the callback wired for compatibility, but drop internal
+        # progress at the native Telegram sender boundary.
+        _suppress_native_telegram_progress = (
+            ctx.source.platform == Platform.TELEGRAM
+            and type(adapter).__module__.startswith("plugins.platforms.telegram")
+        )
+
         # Skip tool progress for platforms that don't support message
         # editing (e.g. iMessage/BlueBubbles) — each progress update
         # would become a separate message bubble, which is noisy.
@@ -4120,6 +4134,9 @@ class TurnRunner:
                     return
 
                 raw = ctx.progress_queue.get_nowait()
+
+                if _suppress_native_telegram_progress:
+                    continue
 
                 # Drain silently when interrupted: events queued in the
                 # window between tool parse and interrupt processing
@@ -4361,10 +4378,22 @@ class TurnRunner:
         ctx = self._ctx
         if not ctx._status_adapter or not ctx._run_still_current():
             return
-        prepared_message = _prepare_gateway_status_message(
-            ctx.source.platform,
-            event_type,
-            message,
+        status_kind = str(event_type or "status")
+        is_alert = status_kind in TELEGRAM_ALERT_KINDS
+        typed_event = DeliveryEvent(
+            kind=status_kind,
+            channel="alert" if is_alert else "internal",
+            alert_kind=status_kind if is_alert else None,
+        )
+        gate = getattr(ctx, "telegram_delivery_gate", None)
+        if ctx.source.platform == Platform.TELEGRAM and (
+            gate is None or not gate.accept(typed_event, delivery_key=str(message or ""))
+        ):
+            return
+        prepared_message = (
+            _sanitize_gateway_final_response(ctx.source.platform, message)
+            if is_alert
+            else _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         )
         if prepared_message is None:
             logger.debug(
@@ -4375,7 +4404,16 @@ class TurnRunner:
             )
             return
         _fut = safe_schedule_threadsafe(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared_message, ctx._status_thread_metadata),
+            _send_or_update_status_coro(
+                ctx._status_adapter,
+                ctx._status_chat_id,
+                event_type,
+                prepared_message,
+                {
+                    **(ctx._status_thread_metadata or {}),
+                    **event_metadata(typed_event),
+                },
+            ),
             ctx._loop_for_step,
             logger=logger,
             log_message=f"status_callback ({event_type}) scheduling error",
@@ -4543,6 +4581,13 @@ class TurnRunner:
 
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
+                return
+            _interim_adapter = self._runner._adapter_for_source(ctx.source)
+            if (
+                ctx.source.platform == Platform.TELEGRAM
+                and _interim_adapter is not None
+                and type(_interim_adapter).__module__.startswith("plugins.platforms.telegram")
+            ):
                 return
             display_text = text
             if _stream_consumer is not None:
@@ -4892,8 +4937,21 @@ class TurnRunner:
                 return
             if not line:
                 return
+            notice_kind = str(getattr(notice, "kind", "") or "status")
+            notice_event = DeliveryEvent(
+                kind=notice_kind,
+                channel="alert" if notice_kind in TELEGRAM_ALERT_KINDS else "internal",
+                alert_kind=notice_kind if notice_kind in TELEGRAM_ALERT_KINDS else None,
+            )
+            gate = getattr(ctx, "telegram_delivery_gate", None)
+            if ctx.source.platform == Platform.TELEGRAM and (
+                gate is None or not gate.accept(notice_event, delivery_key=line)
+            ):
+                return
             safe_schedule_threadsafe(
-                self._runner._deliver_platform_notice(ctx.source, line),
+                self._runner._deliver_platform_notice(
+                    ctx.source, line, metadata=event_metadata(notice_event)
+                ),
                 ctx._loop_for_step,
                 logger=logger,
                 log_message="notice_callback delivery scheduling error",
@@ -4920,6 +4978,8 @@ class TurnRunner:
 
         def _deliver_bg_review_message(message: str) -> None:
             if not ctx._status_adapter or not ctx._run_still_current():
+                return
+            if ctx.source.platform == Platform.TELEGRAM:
                 return
             safe_schedule_threadsafe(
                 ctx._status_adapter.send(
@@ -13883,7 +13943,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
 
-    async def _deliver_platform_notice(self, source, content: str) -> None:
+    async def _deliver_platform_notice(
+        self,
+        source,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Deliver a setup/operational notice using platform-specific privacy rules."""
         adapter = self._adapter_for_source(source)
         if not adapter:
@@ -13905,14 +13970,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if config and hasattr(config, "get_notice_delivery"):
             notice_delivery = config.get_notice_delivery(source.platform)
 
-        metadata = self._thread_metadata_for_source(source)
+        thread_metadata = self._thread_metadata_for_source(source)
+        if metadata:
+            thread_metadata = {**(thread_metadata or {}), **metadata}
         if notice_delivery == "private" and getattr(source, "user_id", None):
             try:
                 result = await adapter.send_private_notice(
                     source.chat_id,
                     source.user_id,
                     content,
-                    metadata=metadata,
+                    metadata=thread_metadata,
                 )
                 if getattr(result, "success", False):
                     return
@@ -17716,6 +17783,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform=source.platform,
                     require_platform_override_for={Platform.MATTERMOST},
                 )
+                if source.platform == Platform.TELEGRAM:
+                    _show_reasoning_effective = False
             except Exception:
                 _show_reasoning_effective = (
                     False
@@ -24314,6 +24383,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        # Telegram delivery is final-answer-first even when global display
+        # settings are noisy. This gate is per turn, so it also prevents a
+        # duplicated callback from producing a second final/alert bubble.
+        _telegram_delivery_gate = TelegramDeliveryGate()
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -24456,6 +24529,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
+        if source.platform == Platform.TELEGRAM:
+            _thinking_enabled = False
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
 
@@ -24568,6 +24643,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # TurnRunner.progress_callback (bound method, same signature).
         turn_ctx.progress_callback = turn_runner.progress_callback
         turn_ctx.voice_ack_callback = turn_runner.voice_ack_callback
+        turn_ctx.telegram_delivery_gate = _telegram_delivery_gate
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
