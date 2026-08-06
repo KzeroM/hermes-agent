@@ -242,8 +242,14 @@ class GatewayStreamConsumer:
         meta = dict(self.metadata) if self.metadata else {}
         if expect_edits:
             meta["expect_edits"] = True
+        meta["delivery_event_kind"] = "progress"
+        meta["delivery_event_channel"] = "internal"
         if final:
             meta["notify"] = True
+            # Final gateway responses are explicitly typed so they can pass
+            # the same Telegram delivery policy as cron/router sends.
+            meta["delivery_event_kind"] = "final"
+            meta["delivery_event_channel"] = "user"
         return meta or None
 
     @property

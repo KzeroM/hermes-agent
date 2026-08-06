@@ -9,6 +9,26 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+def test_stream_send_metadata_is_typed_by_surface():
+    consumer = GatewayStreamConsumer(
+        adapter=MagicMock(),
+        chat_id="123",
+        initial_reply_to_id="456",
+    )
+
+    assert consumer._metadata_for_send(final=False) == {
+        "reply_to_message_id": "456",
+        "delivery_event_kind": "progress",
+        "delivery_event_channel": "internal",
+    }
+    assert consumer._metadata_for_send(final=True) == {
+        "reply_to_message_id": "456",
+        "notify": True,
+        "delivery_event_kind": "final",
+        "delivery_event_channel": "user",
+    }
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 

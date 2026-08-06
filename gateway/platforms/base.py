@@ -78,7 +78,11 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
 
 def _mark_notify_metadata(metadata: dict | None) -> dict:
-    """Clone metadata and mark a user-visible reply as notify-worthy."""
+    """Clone metadata and mark a user-visible reply as notify-worthy.
+
+    Legacy direct adapter sends retain their historical metadata shape; typed
+    event identity is supplied by authoritative routers/stream callers.
+    """
     notify_metadata = dict(metadata) if metadata else {}
     notify_metadata["notify"] = True
     return notify_metadata
