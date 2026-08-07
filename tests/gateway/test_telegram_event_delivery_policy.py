@@ -1,10 +1,11 @@
 """Regression coverage for Telegram's typed event delivery boundary."""
 
 from dataclasses import dataclass
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.event_delivery_policy import (
     DeliveryEvent,
     TelegramDeliveryGate,
@@ -12,6 +13,7 @@ from gateway.event_delivery_policy import (
     event_metadata,
     should_deliver,
 )
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @dataclass
@@ -102,6 +104,23 @@ def test_typed_event_metadata_round_trips_without_text_inspection():
         Platform.TELEGRAM,
         DeliveryEvent("credit.warning", "internal"),
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_adapter_drops_typed_internal_event_before_transport():
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock()
+
+    result = await adapter.send(
+        "chat-test",
+        "internal progress",
+        metadata=event_metadata(DeliveryEvent("progress", "internal")),
+    )
+
+    assert result.success is True
+    assert result.message_id is None
+    adapter._bot.send_message.assert_not_awaited()
 
 
 def test_untyped_router_delivery_defaults_to_final_user_event():

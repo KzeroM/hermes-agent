@@ -11788,7 +11788,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform=source.platform,
                     require_platform_override_for={Platform.MATTERMOST},
                 )
-                if source.platform == Platform.TELEGRAM:
+                if (
+                    source.platform == Platform.TELEGRAM
+                    and getattr(
+                        self._adapter_for_source(source),
+                        "ENFORCES_TYPED_DELIVERY_POLICY",
+                        False,
+                    )
+                ):
                     _show_reasoning_effective = False
             except Exception:
                 _show_reasoning_effective = (
@@ -17056,6 +17063,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
         _telegram_delivery_gate = TelegramDeliveryGate()
+        _telegram_policy_active = (
+            source.platform == Platform.TELEGRAM
+            and getattr(
+                self._adapter_for_source(source),
+                "ENFORCES_TYPED_DELIVERY_POLICY",
+                False,
+            )
+        )
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -17157,7 +17172,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode not in {"off", "log"} and source.platform != Platform.WEBHOOK
-        if source.platform == Platform.TELEGRAM:
+        if _telegram_policy_active:
             tool_progress_enabled = False
         # "log" mode: tool calls are written to ~/.hermes/logs/tool_calls.log
         # instead of the chat (#3459 / #3458). Gateway-only by design.
@@ -17185,7 +17200,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
-        if source.platform == Platform.TELEGRAM:
+        if _telegram_policy_active:
             _thinking_enabled = False
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
@@ -17960,7 +17975,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 channel="alert" if is_alert else "internal",
                 alert_kind=status_kind if is_alert else None,
             )
-            if source.platform == Platform.TELEGRAM and not _telegram_delivery_gate.accept(
+            if _telegram_policy_active and not _telegram_delivery_gate.accept(
                 typed_event,
                 delivery_key=str(message or ""),
             ):
@@ -18171,7 +18186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
                 if not _run_still_current():
                     return
-                if source.platform == Platform.TELEGRAM:
+                if _telegram_policy_active:
                     return
                 display_text = text
                 if _stream_consumer is not None:
@@ -18428,7 +18443,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     channel="alert" if notice_kind in TELEGRAM_ALERT_KINDS else "internal",
                     alert_kind=notice_kind if notice_kind in TELEGRAM_ALERT_KINDS else None,
                 )
-                if source.platform == Platform.TELEGRAM and not _telegram_delivery_gate.accept(
+                if _telegram_policy_active and not _telegram_delivery_gate.accept(
                     notice_event,
                     delivery_key=line,
                 ):
@@ -18458,7 +18473,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
-                if source.platform == Platform.TELEGRAM:
+                if _telegram_policy_active:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(

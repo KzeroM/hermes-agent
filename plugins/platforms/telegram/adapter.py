@@ -197,6 +197,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.event_delivery_policy import event_from_metadata, should_deliver
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -437,6 +438,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    ENFORCES_TYPED_DELIVERY_POLICY = True
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
@@ -3572,6 +3574,9 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
         """Send a message to a Telegram chat."""
+        typed_event = event_from_metadata(metadata)
+        if typed_event is not None and not should_deliver(self.platform, typed_event):
+            return SendResult(success=True, message_id=None)
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
