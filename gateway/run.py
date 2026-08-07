@@ -411,6 +411,17 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _strip_trailing_final_answer_block(text: str) -> str:
+    match = re.search(
+        r"(?is)(?:\r?\n\s*)?<final_answer>\s*(.*?)\s*(?:</final_answer>|final_answer>)\s*$",
+        text,
+    )
+    if match is None:
+        return text
+    prefix = text[:match.start()].rstrip()
+    return prefix or match.group(1).strip()
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -432,6 +443,7 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
         return ""
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _strip_trailing_final_answer_block(redacted)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
