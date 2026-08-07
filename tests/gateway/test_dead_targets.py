@@ -16,6 +16,12 @@ from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.dead_targets import DeadTargetRegistry
 
 
+FINAL_METADATA = {
+    "delivery_event_kind": "final",
+    "delivery_event_channel": "user",
+}
+
+
 class ForbiddenThenOkAdapter:
     """First send raises a deleted-group Forbidden; subsequent sends succeed."""
 
@@ -100,13 +106,13 @@ async def test_forbidden_marks_target_dead_then_short_circuits(isolate):
     target = DeliveryTarget.parse("telegram:42")
 
     # First delivery: send raises Forbidden -> failure + target recorded dead.
-    res1 = await router.deliver("hi", [target])
+    res1 = await router.deliver("hi", [target], metadata=FINAL_METADATA)
     assert res1["telegram:42"]["success"] is False
     assert router.dead_targets.is_dead("telegram", "42") is True
     assert adapter.calls == ["42"]  # adapter was invoked once
 
     # Second delivery: short-circuited, adapter NOT called again.
-    res2 = await router.deliver("hi again", [target])
+    res2 = await router.deliver("hi again", [target], metadata=FINAL_METADATA)
     assert res2["telegram:42"]["skipped"] == "dead_target"
     assert res2["telegram:42"]["success"] is False
     assert adapter.calls == ["42"]  # still only the original call
@@ -120,12 +126,12 @@ async def test_successful_send_clears_dead_flag(isolate):
     target = DeliveryTarget.parse("telegram:7")
 
     # Pre-seed dead via the first (failing) delivery.
-    await router.deliver("a", [target])
+    await router.deliver("a", [target], metadata=FINAL_METADATA)
     assert router.dead_targets.is_dead("telegram", "7") is True
 
     # Manually clear to simulate the user re-adding the bot, then deliver again.
     router.dead_targets.clear("telegram", "7")
-    res = await router.deliver("b", [target])
+    res = await router.deliver("b", [target], metadata=FINAL_METADATA)
     assert res["telegram:7"]["success"] is True
     # Flag stays cleared after a successful send.
     assert router.dead_targets.is_dead("telegram", "7") is False
@@ -137,7 +143,7 @@ async def test_transient_failure_does_not_mark_dead(isolate):
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:13")
 
-    res = await router.deliver("hi", [target])
+    res = await router.deliver("hi", [target], metadata=FINAL_METADATA)
     assert res["telegram:13"]["success"] is False
     # A timeout/transient error must NOT mark the chat dead — it may recover.
     assert router.dead_targets.is_dead("telegram", "13") is False
@@ -147,7 +153,7 @@ async def test_transient_failure_does_not_mark_dead(isolate):
 async def test_local_target_is_never_dead_tracked(isolate):
     router = DeliveryRouter(GatewayConfig(), adapters={})
     target = DeliveryTarget.parse("local")
-    res = await router.deliver("hi", [target])
+    res = await router.deliver("hi", [target], metadata=FINAL_METADATA)
     assert res["local"]["success"] is True
     assert router.dead_targets.all_dead() == {}
 
@@ -163,7 +169,7 @@ async def test_shared_registry_is_used_when_injected(isolate):
         dead_targets=shared,
     )
     target = DeliveryTarget.parse("telegram:500")
-    res = await router.deliver("hi", [target])
+    res = await router.deliver("hi", [target], metadata=FINAL_METADATA)
     # Injected registry's pre-existing flag short-circuits before any send.
     assert res["telegram:500"]["skipped"] == "dead_target"
     assert adapter.calls == []
@@ -202,7 +208,7 @@ async def test_chat_level_not_found_marks_target_dead(isolate):
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:100")
 
-    res = await router.deliver("hi", [target])
+    res = await router.deliver("hi", [target], metadata=FINAL_METADATA)
     assert res["telegram:100"]["success"] is False
     assert router.dead_targets.is_dead("telegram", "100") is True
 
@@ -216,7 +222,7 @@ async def test_thread_or_message_level_not_found_does_not_mark_chat_dead(isolate
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:200")
 
-    res = await router.deliver("hi", [target])
+    res = await router.deliver("hi", [target], metadata=FINAL_METADATA)
     assert res["telegram:200"]["success"] is False
     assert router.dead_targets.is_dead("telegram", "200") is False
 

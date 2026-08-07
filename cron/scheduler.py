@@ -101,6 +101,26 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
+def _cron_delivery_event_metadata(job: dict, *, success: bool, error: str | None) -> dict:
+    """Return typed metadata for the actual cron delivery producer.
+
+    ``last_status`` is the durable status from the preceding run.  It lets a
+    successful run emit a recovery alert without inventing a new transition or
+    consulting another state store.  Normal successful output remains a user
+    final; only the explicitly approved operational alert kinds are promoted.
+    """
+    from gateway.event_delivery_policy import DeliveryEvent, event_metadata
+
+    if not success:
+        kind = "cron.blocker" if "CronPromptInjectionBlocked" in str(error or "") else "cron.failure"
+        event = DeliveryEvent(kind=kind, channel="alert", alert_kind=kind)
+    elif str(job.get("last_status") or "").lower() == "error":
+        event = DeliveryEvent("cron.recovered", "alert", alert_kind="cron.recovered")
+    else:
+        event = DeliveryEvent("final", "user")
+    return event_metadata(event)
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -1402,7 +1422,13 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    delivery_event_metadata: Optional[dict] = None,
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1488,6 +1514,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+    event_metadata_for_default = delivery_event_metadata or _cron_delivery_event_metadata(
+        job, success=True, error=None,
+    )
 
     for target in targets:
         platform_name = target["platform"]
@@ -1676,6 +1705,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
+
+            route_metadata.update(delivery_event_metadata or event_metadata_for_default)
 
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
@@ -3510,7 +3541,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
 
             if should_deliver:
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(
+                        job,
+                        deliver_content,
+                        adapters=adapters,
+                        loop=loop,
+                        delivery_event_metadata=_cron_delivery_event_metadata(
+                            job, success=success, error=error,
+                        ),
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)

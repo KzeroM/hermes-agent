@@ -8,6 +8,12 @@ from gateway.platforms.base import SendResult
 from gateway.session import SessionSource
 
 
+FINAL_METADATA = {
+    "delivery_event_kind": "final",
+    "delivery_event_channel": "user",
+}
+
+
 class TestParseTargetPlatformChat:
     def test_explicit_telegram_chat(self):
         target = DeliveryTarget.parse("telegram:12345")
@@ -167,7 +173,7 @@ async def test_explicit_telegram_private_thread_requires_reply_anchor(tmp_path, 
     target = DeliveryTarget.parse("telegram:722341991:32344")
 
     with pytest.raises(RuntimeError, match="requires telegram_reply_to_message_id"):
-        await router._deliver_to_platform(target, "hello", metadata=None)
+        await router._deliver_to_platform(target, "hello", metadata=FINAL_METADATA)
 
     assert adapter.calls == []
 
@@ -179,7 +185,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:722341991:Hermes API Test")
 
-    await router._deliver_to_platform(target, "hello", metadata=None)
+    await router._deliver_to_platform(target, "hello", metadata=FINAL_METADATA)
 
     assert adapter.ensure_dm_topic_calls == [
         {"chat_id": "722341991", "topic_name": "Hermes API Test", "force_create": False}
@@ -189,6 +195,7 @@ async def test_named_telegram_private_topic_is_created_before_delivery(tmp_path,
             "chat_id": "722341991",
             "content": "hello",
             "metadata": {
+                **FINAL_METADATA,
                 "thread_id": "38049",
                 "telegram_dm_topic_created_for_send": True,
             },
@@ -203,7 +210,7 @@ async def test_named_telegram_private_topic_refreshes_stale_thread_id(tmp_path, 
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:722341991:Personal")
 
-    result = await router._deliver_to_platform(target, "hello", metadata=None)
+    result = await router._deliver_to_platform(target, "hello", metadata=FINAL_METADATA)
 
     assert getattr(result, "message_id", None) == "fresh-message"
     assert adapter.ensure_dm_topic_calls == [
@@ -224,7 +231,7 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
     await router._deliver_to_platform(
         target,
         "hello",
-        metadata={"telegram_reply_to_message_id": "9001"},
+        metadata={**FINAL_METADATA, "telegram_reply_to_message_id": "9001"},
     )
 
     assert adapter.calls == [
@@ -232,6 +239,7 @@ async def test_explicit_telegram_private_thread_uses_reply_fallback_with_anchor(
             "chat_id": "722341991",
             "content": "hello",
             "metadata": {
+                **FINAL_METADATA,
                 "telegram_reply_to_message_id": "9001",
                 "thread_id": "32344",
                 "telegram_dm_topic_reply_fallback": True,
@@ -250,10 +258,13 @@ async def test_explicit_telegram_direct_messages_topic_metadata_is_respected(tmp
     await router._deliver_to_platform(
         target,
         "hello",
-        metadata={"telegram_direct_messages_topic_id": "32344"},
+        metadata={**FINAL_METADATA, "telegram_direct_messages_topic_id": "32344"},
     )
 
-    assert adapter.calls[0]["metadata"] == {"telegram_direct_messages_topic_id": "32344"}
+    assert adapter.calls[0]["metadata"] == {
+        **FINAL_METADATA,
+        "telegram_direct_messages_topic_id": "32344",
+    }
 
 
 @pytest.mark.asyncio
@@ -263,9 +274,48 @@ async def test_explicit_telegram_group_thread_does_not_mark_dm_fallback(tmp_path
     router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
     target = DeliveryTarget.parse("telegram:-100123:42")
 
-    await router._deliver_to_platform(target, "hello", metadata=None)
+    await router._deliver_to_platform(target, "hello", metadata=FINAL_METADATA)
 
-    assert adapter.calls[0]["metadata"] == {"thread_id": "42"}
+    assert adapter.calls[0]["metadata"] == {**FINAL_METADATA, "thread_id": "42"}
+
+
+@pytest.mark.asyncio
+async def test_telegram_router_rejects_missing_typed_event(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+
+    result = await router._deliver_to_platform(
+        DeliveryTarget.parse("telegram:123"),
+        "looks like a final answer",
+        metadata=None,
+    )
+
+    assert result == {
+        "success": True,
+        "filtered": "missing_typed_event",
+        "delivered": False,
+    }
+    assert adapter.calls == []
+
+
+@pytest.mark.asyncio
+async def test_telegram_router_rejects_internal_typed_event(tmp_path, monkeypatch):
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+
+    result = await router._deliver_to_platform(
+        DeliveryTarget.parse("telegram:123"),
+        "running",
+        metadata={
+            "delivery_event_kind": "status",
+            "delivery_event_channel": "internal",
+        },
+    )
+
+    assert result == {"success": True, "filtered": "typed_event", "delivered": False}
+    assert adapter.calls == []
 
 
 class FailingAdapter:
@@ -280,7 +330,11 @@ async def test_platform_send_failure_raises_for_delivery_result(tmp_path, monkey
     target = DeliveryTarget.parse("telegram:722341991:32344")
 
     with pytest.raises(RuntimeError, match="route failed"):
-        await router._deliver_to_platform(target, "hello", metadata={"telegram_reply_to_message_id": "9001"})
+        await router._deliver_to_platform(
+            target,
+            "hello",
+            metadata={**FINAL_METADATA, "telegram_reply_to_message_id": "9001"},
+        )
 
 
 # ---------------------------------------------------------------------------

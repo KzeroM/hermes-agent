@@ -103,7 +103,12 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Test")
 
         call_kwargs = adapter.send.call_args[1]
-        assert call_kwargs["metadata"] == {**metadata, "expect_edits": True}
+        assert call_kwargs["metadata"] == {
+            **metadata,
+            "expect_edits": True,
+            "delivery_event_kind": "progress",
+            "delivery_event_channel": "internal",
+        }
         assert metadata == {"thread_id": "omt_topic789"}
 
     @pytest.mark.asyncio
@@ -123,6 +128,8 @@ class TestInitialReplyToId:
         metadata = call_kwargs["metadata"]
         assert metadata["thread_id"] == "root_post_123"
         assert metadata["notify"] is True
+        assert metadata["delivery_event_kind"] == "final"
+        assert metadata["delivery_event_channel"] == "user"
         assert "delivery_kind" not in metadata
         assert "allow_flat_fallback" not in metadata
 
@@ -140,7 +147,12 @@ class TestInitialReplyToId:
         await consumer._send_or_edit("Preview", finalize=False)
 
         metadata = adapter.send.call_args[1]["metadata"]
-        assert metadata == {"thread_id": "root_post_123", "expect_edits": True}
+        assert metadata == {
+            "thread_id": "root_post_123",
+            "expect_edits": True,
+            "delivery_event_kind": "progress",
+            "delivery_event_channel": "internal",
+        }
 
 
 class TestOverflowFirstMessage:

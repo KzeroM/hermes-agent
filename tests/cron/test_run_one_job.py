@@ -27,8 +27,9 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
-        calls.append(("deliver", job["id"]))
+    def fake_deliver(job, content, adapters=None, loop=None,
+                     delivery_event_metadata=None):
+        calls.append(("deliver", job["id"], dict(delivery_event_metadata or {})))
         return None
 
     def fake_mark(jid, ok, err=None, delivery_error=None):
@@ -63,6 +64,10 @@ def test_run_one_job_success_sequence(monkeypatch):
 
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
+    assert calls[2][2] == {
+        "delivery_event_kind": "final",
+        "delivery_event_channel": "user",
+    }
     assert calls[-1] == ("mark", "j2", True)
 
 
@@ -184,7 +189,7 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, delivery_event_metadata=None):
         order.append("deliver")
         return None
 
@@ -219,7 +224,7 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def boom_deliver(job, content, adapters=None, loop=None):
+    def boom_deliver(job, content, adapters=None, loop=None, delivery_event_metadata=None):
         order.append("deliver-raise")
         raise RuntimeError("send blew up")
 
