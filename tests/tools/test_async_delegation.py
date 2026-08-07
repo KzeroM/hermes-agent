@@ -454,6 +454,17 @@ def test_model_dispatch_forces_background():
     ) is False
 
 
+def test_model_dispatch_sync_mode_keeps_top_level_result_in_parent_turn():
+    import tools.delegate_tool as dt
+    from unittest.mock import MagicMock, patch
+
+    top = MagicMock()
+    top._delegate_depth = 0
+
+    with patch.object(dt, "_load_config", return_value={"background_mode": "sync"}):
+        assert dt._model_background_value({"goal": "x"}, top) is False
+
+
 def test_run_agent_dispatch_forces_background():
     """run_agent._dispatch_delegate_task — the live model path — forces
     background on for any top-level delegation (single OR batch) and off for a
@@ -484,6 +495,28 @@ def test_run_agent_dispatch_forces_background():
         sub._delegate_depth = 1
         run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
         assert captured["background"] is False
+
+
+def test_run_agent_dispatch_honors_sync_background_mode():
+    from unittest.mock import patch
+    import run_agent
+
+    class _FakeAgent:
+        _delegate_depth = 0
+
+    captured = {}
+
+    def _fake_delegate(**kwargs):
+        captured.update(kwargs)
+        return "{}"
+
+    with (
+        patch("tools.delegate_tool._load_config", return_value={"background_mode": "sync"}),
+        patch("tools.delegate_tool.delegate_task", _fake_delegate),
+    ):
+        run_agent.AIAgent._dispatch_delegate_task(_FakeAgent(), {"goal": "x"})
+
+    assert captured["background"] is False
 
 
 def test_dispatch_never_forwards_model_toolsets():
@@ -675,5 +708,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-
