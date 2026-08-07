@@ -849,6 +849,9 @@ async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp
         tmp_path,
         CommentaryAgent,
         session_id="sess-commentary-default-on",
+        platform=Platform.SLACK,
+        chat_id="C123",
+        thread_id="thread-1",
     )
 
     assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
