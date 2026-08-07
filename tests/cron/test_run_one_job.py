@@ -189,7 +189,7 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, delivery_event_metadata=None):
         order.append("deliver")
         return None
 
@@ -224,7 +224,7 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def boom_deliver(job, content, adapters=None, loop=None):
+    def boom_deliver(job, content, adapters=None, loop=None, delivery_event_metadata=None):
         order.append("deliver-raise")
         raise RuntimeError("send blew up")
 

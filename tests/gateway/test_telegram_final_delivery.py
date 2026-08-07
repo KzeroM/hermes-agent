@@ -135,7 +135,11 @@ async def test_turn_final_flood_commits_empty_tail_as_fresh_message():
 
     adapter.send.assert_awaited_once()
     assert adapter.send.await_args.kwargs["content"] == final_text
-    assert adapter.send.await_args.kwargs["metadata"] == {"notify": True}
+    assert adapter.send.await_args.kwargs["metadata"] == {
+        "notify": True,
+        "delivery_event_kind": "final",
+        "delivery_event_channel": "user",
+    }
     adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
     assert consumer.message_id == "final-1"
     assert consumer.final_response_sent is True
