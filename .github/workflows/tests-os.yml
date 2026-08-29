@@ -48,7 +48,8 @@ jobs:
             runner: macos-latest
             marker: macos_only
           - name: Windows-only tests
-            runner: windows-latest-32-core
+            # Larger Windows label is upstream-only; forks use the standard hosted runner.
+            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-core' || 'windows-latest' }}
             marker: windows_only
     steps:
       - name: Checkout code
