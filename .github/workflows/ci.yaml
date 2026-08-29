@@ -38,7 +38,9 @@ jobs:
   detect:
     name: Detect affected areas
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    # Large lineage comparisons can consume most of a minute per API attempt.
+    # Leave enough time for the composite action's three-attempt retry contract.
+    timeout-minutes: 5
     outputs:
       python: ${{ steps.classify.outputs.python }}
       python_prod: ${{ steps.classify.outputs.python_prod }}
