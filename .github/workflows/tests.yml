@@ -13,18 +13,24 @@ concurrency:
 
 jobs:
   test:
-    name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
+    name: ${{ github.repository == 'NousResearch/hermes-agent' && 'Run tests' || format('Run tests slice {0}/12', matrix.slice) }}
+    # Upstream uses one 96-core runner for the whole suite. Forks restore
+    # 12-way slicing below because the org-only runner is unavailable there.
     #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s). A second slice divides work that is already at that floor, and
-    # adds a second setup.
+    # On the upstream runner, 96 cores clear the floor that the slowest single
+    # test file sets (about 82s). A second slice divides work already at that
+    # floor and adds a second setup, so the upstream path remains unsliced.
     # Dedicated larger labels are available only in the upstream org; forks
-    # use GitHub's standard hosted runner so required checks can start.
+    # use a matrix of standard hosted runners so required checks can start
+    # without oversubscribing one 4-core machine.
     runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'ubuntu-latest-96-core' || 'ubuntu-latest' }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Upstream keeps the optimized single 96-core job. Forks restore the
+        # 12-way split that made the same full suite fit standard runners.
+        slice: ${{ fromJSON(github.repository == 'NousResearch/hermes-agent' && '[1]' || '[1,2,3,4,5,6,7,8,9,10,11,12]') }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -99,7 +105,11 @@ jobs:
         # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh
+          if [[ "${{ github.repository }}" == "NousResearch/hermes-agent" ]]; then
+            scripts/run_tests.sh
+          else
+            scripts/run_tests.sh --slice "${{ matrix.slice }}/12"
+          fi
         env:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
@@ -121,7 +131,7 @@ jobs:
           # across a 6x range. The suite has sufficient concurrency at this
           # size. The remaining time is the slowest files plus the setup.
           # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          HERMES_TEST_WORKERS: ${{ github.repository == 'NousResearch/hermes-agent' && 96 || 4 }}
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
