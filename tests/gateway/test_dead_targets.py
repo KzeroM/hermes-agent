@@ -14,6 +14,7 @@ import pytest
 from gateway.config import GatewayConfig, Platform
 from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.dead_targets import DeadTargetRegistry
+from gateway.event_delivery_policy import DeliveryEvent, event_metadata
 
 
 class ForbiddenThenOkAdapter:
@@ -76,13 +77,14 @@ async def test_forbidden_marks_target_dead_then_short_circuits(isolate):
     target = DeliveryTarget.parse("telegram:42")
 
     # First delivery: send raises Forbidden -> failure + target recorded dead.
-    res1 = await router.deliver("hi", [target])
+    typed_final = event_metadata(DeliveryEvent("final", "user"))
+    res1 = await router.deliver("hi", [target], metadata=typed_final)
     assert res1["telegram:42"]["success"] is False
     assert router.dead_targets.is_dead("telegram", "42") is True
     assert adapter.calls == ["42"]  # adapter was invoked once
 
     # Second delivery: short-circuited, adapter NOT called again.
-    res2 = await router.deliver("hi again", [target])
+    res2 = await router.deliver("hi again", [target], metadata=typed_final)
     assert res2["telegram:42"]["skipped"] == "dead_target"
     assert res2["telegram:42"]["success"] is False
     assert adapter.calls == ["42"]  # still only the original call

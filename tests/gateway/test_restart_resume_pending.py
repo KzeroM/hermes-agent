@@ -812,7 +812,11 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 2
-    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
+    assert adapter.sent_calls[0][2] == {
+        "thread_id": "topic-7",
+        "delivery_event_kind": "interactive",
+        "delivery_event_channel": "user",
+    }
     assert adapter.sent_calls[1][2] is None
 
 

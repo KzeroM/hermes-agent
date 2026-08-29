@@ -565,10 +565,10 @@ async def test_dm_topic_table_stream_uses_send_rich_message():
 
 
 @pytest.mark.asyncio
-async def test_dm_topic_table_survives_when_drafts_degrade_to_edit():
-    """Reporter path: sendMessageDraft fails in a private topic, Telegram
-    then rejects a rich edit of the plain MarkdownV2 preview. The final
-    must still persist through sendRichMessage — not convert_table_to_bullets.
+async def test_dm_topic_table_survives_when_draft_delivery_fails():
+    """When sendMessageDraft fails in a private topic, the first persistent
+    fallback is already the rich final. No degraded preview needs cleanup and
+    the table must survive without conversion to bullet groups.
     """
     adapter = _make_adapter()
     adapter._bot.send_message_draft = AsyncMock(
@@ -605,7 +605,7 @@ async def test_dm_topic_table_survives_when_drafts_degrade_to_edit():
     await task
 
     rich_endpoints = [call.args[0] for call in adapter._bot.do_api_request.await_args_list]
-    assert "sendRichMessage" in rich_endpoints
+    assert rich_endpoints.count("sendRichMessage") == 1
     rich_kwargs = None
     for call in adapter._bot.do_api_request.await_args_list:
         if call.args[0] == "sendRichMessage":
@@ -613,8 +613,10 @@ async def test_dm_topic_table_survives_when_drafts_degrade_to_edit():
             break
     assert rich_kwargs is not None
     assert "| F1 |" in rich_kwargs["rich_message"]["markdown"]
-    # Degraded preview is deleted so the user is not left with the bullet rewrite.
-    adapter._bot.delete_message.assert_awaited()
+    # The draft failed before creating a persistent preview, so the fallback is
+    # the single rich message itself: no legacy preview and no cleanup delete.
+    adapter._bot.send_message.assert_not_called()
+    adapter._bot.delete_message.assert_not_called()
 
 
 def test_supports_draft_streaming_enabled_when_rich_drafts_opt_in():
