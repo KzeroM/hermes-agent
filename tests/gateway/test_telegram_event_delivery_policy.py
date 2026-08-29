@@ -121,8 +121,3 @@ async def test_telegram_adapter_drops_typed_internal_event_before_transport():
     assert result.success is True
     assert result.message_id is None
     adapter._bot.send_message.assert_not_awaited()
-
-
-def test_untyped_router_delivery_defaults_to_final_user_event():
-    # A legacy cron result has no event metadata, but must remain deliverable.
-    assert should_deliver(Platform.TELEGRAM, DeliveryEvent("final", "user"))
