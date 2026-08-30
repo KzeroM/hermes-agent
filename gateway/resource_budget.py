@@ -3,13 +3,23 @@
 from __future__ import annotations
 
 import os
+import stat
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 
 _FD_DEGRADED_PERCENT = 70.0
 _FD_CRITICAL_PERCENT = 85.0
+_MAX_FD_SCAN_ENTRIES = 4096
 _SQLITE_SUFFIXES = (".db", ".db-wal", ".db-shm", "-wal", "-shm")
+
+
+@dataclass(frozen=True)
+class _FdSnapshot:
+    used: int
+    limit: int
+    sqlite_handles: int
+    truncated: bool
 
 
 def _proc_fd_root(pid: int | None) -> Path | None:
@@ -19,88 +29,123 @@ def _proc_fd_root(pid: int | None) -> Path | None:
     return root if root.is_dir() else None
 
 
-def fd_usage(pid: int | None = None) -> tuple[int, int] | None:
-    """Return current/soft file-descriptor usage where ``/proc`` is available."""
-    root = _proc_fd_root(pid)
-    if root is None:
-        return None
+def _soft_fd_limit() -> int | None:
     try:
-        used = sum(1 for _ in root.iterdir())
         import resource
 
         soft_limit, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
         if soft_limit <= 0 or soft_limit == resource.RLIM_INFINITY:
             return None
-        return used, int(soft_limit)
+        return int(soft_limit)
     except (ImportError, OSError, ValueError):
         return None
 
 
-def sqlite_handle_count(pid: int | None = None) -> int | None:
-    """Count open SQLite-related handles without exposing their target paths."""
-    root = _proc_fd_root(pid)
-    if root is None:
-        return None
+def _sqlite_target_name(handle: Path) -> str | None:
     try:
-        count = 0
-        for handle in root.iterdir():
-            target_name = handle.readlink().name.lower()
-            if target_name.endswith(_SQLITE_SUFFIXES):
-                count += 1
-        return count
+        target_name = handle.readlink().name.lower()
     except (OSError, ValueError):
         return None
+    return target_name.removesuffix(" (deleted)")
+
+
+def _scan_fd_root(root: Path) -> tuple[int, int, bool]:
+    used = 0
+    sqlite_handles = 0
+    for handle in root.iterdir():
+        used += 1
+        if used > _MAX_FD_SCAN_ENTRIES:
+            return used, sqlite_handles, True
+        target_name = _sqlite_target_name(handle)
+        if target_name is not None and target_name.endswith(_SQLITE_SUFFIXES):
+            sqlite_handles += 1
+    return used, sqlite_handles, False
+
+
+def _collect_fd_snapshot(pid: int | None = None) -> _FdSnapshot | None:
+    root = _proc_fd_root(pid)
+    limit = _soft_fd_limit()
+    if root is None or limit is None:
+        return None
+    try:
+        used, sqlite_handles, truncated = _scan_fd_root(root)
+    except (OSError, ValueError):
+        return None
+    return _FdSnapshot(
+        used=used,
+        limit=limit,
+        sqlite_handles=sqlite_handles,
+        truncated=truncated,
+    )
+
+
+def fd_usage(pid: int | None = None) -> tuple[int, int] | None:
+    """Return exact current/soft FD usage when a bounded scan can complete."""
+    snapshot = _collect_fd_snapshot(pid)
+    if snapshot is None or snapshot.truncated:
+        return None
+    return snapshot.used, snapshot.limit
+
+
+def sqlite_handle_count(pid: int | None = None) -> int | None:
+    """Count SQLite handles when a bounded scan can complete."""
+    snapshot = _collect_fd_snapshot(pid)
+    if snapshot is None or snapshot.truncated:
+        return None
+    return snapshot.sqlite_handles
 
 
 def wal_size_bytes(home: Path) -> int | None:
     """Return the canonical state WAL size without following symlinks."""
     path = home / "state.db-wal"
     try:
-        if path.is_symlink():
-            return None
-        if not path.exists():
-            return 0
-        if not path.is_file():
-            return None
-        return max(0, int(path.stat().st_size))
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return 0
     except OSError:
         return None
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return None
+    return max(0, int(metadata.st_size))
 
 
-def _unknown() -> dict[str, object]:
-    return {"status": "unknown"}
+def _unknown(**extra: object) -> dict[str, object]:
+    return {"status": "unknown", **extra}
 
 
 def collect_resource_budget(home: Path) -> dict[str, dict[str, object]]:
     """Return sanitized counts only; unsupported probes remain explicitly unknown."""
-    fd = fd_usage()
-    if fd is None:
+    snapshot = _collect_fd_snapshot()
+    if snapshot is None:
         fd_check: dict[str, object] = _unknown()
+        sqlite_check: dict[str, object] = _unknown()
+    elif snapshot.truncated:
+        fd_check = {
+            "status": "degraded",
+            "used_at_least": snapshot.used,
+            "limit": snapshot.limit,
+            "scan_truncated": True,
+        }
+        sqlite_check = _unknown(scan_truncated=True)
+    elif snapshot.used < 0 or snapshot.limit <= 0 or snapshot.sqlite_handles < 0:
+        fd_check = _unknown()
+        sqlite_check = _unknown()
     else:
-        used, limit = fd
-        if used < 0 or limit <= 0:
-            fd_check = _unknown()
+        raw_percent = (snapshot.used / snapshot.limit) * 100
+        if raw_percent >= _FD_CRITICAL_PERCENT:
+            status_value = "critical"
+        elif raw_percent >= _FD_DEGRADED_PERCENT:
+            status_value = "degraded"
         else:
-            used_percent = round((used / limit) * 100, 1)
-            if used_percent >= _FD_CRITICAL_PERCENT:
-                status = "critical"
-            elif used_percent >= _FD_DEGRADED_PERCENT:
-                status = "degraded"
-            else:
-                status = "ok"
-            fd_check = {
-                "status": status,
-                "used": used,
-                "limit": limit,
-                "used_percent": used_percent,
-            }
+            status_value = "ok"
+        fd_check = {
+            "status": status_value,
+            "used": snapshot.used,
+            "limit": snapshot.limit,
+            "used_percent": round(raw_percent, 1),
+        }
+        sqlite_check = {"status": "ok", "count": snapshot.sqlite_handles}
 
-    sqlite_handles = sqlite_handle_count()
-    sqlite_check = (
-        _unknown()
-        if sqlite_handles is None or sqlite_handles < 0
-        else {"status": "ok", "count": sqlite_handles}
-    )
     wal_bytes = wal_size_bytes(home)
     wal_check = (
         _unknown()

@@ -64,14 +64,18 @@ def _probe_config(home: Path) -> dict[str, Any]:
 def _probe_disk(home: Path) -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(home)
-        used_pct = round((usage.used / usage.total) * 100, 1) if usage.total else 0.0
-        if used_pct >= _DISK_CRITICAL_PERCENT:
-            status = "critical"
-        elif used_pct >= _DISK_DEGRADED_PERCENT:
-            status = "degraded"
+        raw_percent = (usage.used / usage.total) * 100 if usage.total else 0.0
+        if raw_percent >= _DISK_CRITICAL_PERCENT:
+            status_value = "critical"
+        elif raw_percent >= _DISK_DEGRADED_PERCENT:
+            status_value = "degraded"
         else:
-            status = "ok"
-        return _check(status, used_percent=used_pct, free_bytes=usage.free)
+            status_value = "ok"
+        return _check(
+            status_value,
+            used_percent=round(raw_percent, 1),
+            free_bytes=usage.free,
+        )
     except Exception as exc:
         return _check("degraded", type(exc).__name__)
 
@@ -90,8 +94,13 @@ def _probe_gateway(runtime_status: dict[str, Any]) -> dict[str, Any]:
             and str(value.get("state") or value.get("status") or "").lower()
             in {"connected", "running", "ok"}
         )
-    status = "ok" if state in {"running", "draining"} else "degraded"
-    return _check(status, state=state, connected_platforms=connected, platforms=configured)
+    status_value = "ok" if state in {"running", "draining"} else "degraded"
+    return _check(
+        status_value,
+        state=state,
+        connected_platforms=connected,
+        platforms=configured,
+    )
 
 
 def _probe_session_store(
@@ -149,9 +158,11 @@ def collect_runtime_readiness(
         ),
     }
     checks.update(collect_resource_budget(home))
-    overall = "degraded" if any(
-        item.get("status") not in {"ok", "unknown"} for item in checks.values()
-    ) else "ok"
+    overall = (
+        "degraded"
+        if any(item.get("status") not in {"ok", "unknown"} for item in checks.values())
+        else "ok"
+    )
     return {"status": overall, "checks": checks}
 
 
