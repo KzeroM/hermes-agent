@@ -10,10 +10,13 @@ from typing import Any
 
 import yaml
 
+from gateway.code_skew import detect_code_skew
+from gateway.resource_budget import collect_resource_budget
 from hermes_constants import get_hermes_home
 
 
-_DISK_DEGRADED_PERCENT = 90.0
+_DISK_DEGRADED_PERCENT = 85.0
+_DISK_CRITICAL_PERCENT = 92.0
 
 
 def _check(status: str, detail: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -62,7 +65,12 @@ def _probe_disk(home: Path) -> dict[str, Any]:
     try:
         usage = shutil.disk_usage(home)
         used_pct = round((usage.used / usage.total) * 100, 1) if usage.total else 0.0
-        status = "degraded" if used_pct >= _DISK_DEGRADED_PERCENT else "ok"
+        if used_pct >= _DISK_CRITICAL_PERCENT:
+            status = "critical"
+        elif used_pct >= _DISK_DEGRADED_PERCENT:
+            status = "degraded"
+        else:
+            status = "ok"
         return _check(status, used_percent=used_pct, free_bytes=usage.free)
     except Exception as exc:
         return _check("degraded", type(exc).__name__)
@@ -100,6 +108,14 @@ def _probe_session_store(
     return _check("ok" if state_db_probe.get("status") == "ok" else "unavailable")
 
 
+def _probe_code_version() -> dict[str, Any]:
+    skew = detect_code_skew()
+    if skew is None:
+        return _check("ok")
+    boot, disk = skew
+    return _check("degraded", boot=boot, disk=disk)
+
+
 def collect_runtime_readiness(
     *,
     configured_model: str,
@@ -124,6 +140,7 @@ def collect_runtime_readiness(
         "model": _check("ok" if str(configured_model or "").strip() else "degraded"),
         "disk": _probe_disk(home),
         "gateway": _probe_gateway(runtime),
+        "code_version": _probe_code_version(),
         "background_queues": _check(
             "ok",
             active_api_runs=max(0, int(active_api_runs)),
@@ -131,7 +148,10 @@ def collect_runtime_readiness(
             active_delegations=max(0, int(active_delegations)),
         ),
     }
-    overall = "ok" if all(item.get("status") == "ok" for item in checks.values()) else "degraded"
+    checks.update(collect_resource_budget(home))
+    overall = "degraded" if any(
+        item.get("status") not in {"ok", "unknown"} for item in checks.values()
+    ) else "ok"
     return {"status": overall, "checks": checks}
 
 
