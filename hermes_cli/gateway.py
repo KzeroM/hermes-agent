@@ -3662,6 +3662,24 @@ def _strip_optional_systemd_directives(text: str) -> str:
     return "\n".join(filtered)
 
 
+def _strip_optional_service_path_entries(text: str) -> str:
+    normalized_lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        prefix = 'Environment="PATH='
+        if stripped.startswith(prefix) and stripped.endswith('"'):
+            path_value = stripped[len(prefix):-1]
+            entries = [
+                entry
+                for entry in path_value.split(":")
+                if not entry.rstrip("/").endswith("/node_modules/.bin")
+            ]
+            indentation = line[:len(line) - len(line.lstrip())]
+            line = f'{indentation}{prefix}{":".join(entries)}"'
+        normalized_lines.append(line)
+    return "\n".join(normalized_lines)
+
+
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
     """Normalize launchd plist text for staleness checks.
 
@@ -3711,10 +3729,14 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
     # those directives is not perpetually flagged as outdated.
     norm_installed = _normalize_service_definition(
-        _strip_optional_systemd_directives(installed)
+        _strip_optional_service_path_entries(
+            _strip_optional_systemd_directives(installed)
+        )
     )
     norm_expected = _normalize_service_definition(
-        _strip_optional_systemd_directives(expected)
+        _strip_optional_service_path_entries(
+            _strip_optional_systemd_directives(expected)
+        )
     )
     return norm_installed == norm_expected
 

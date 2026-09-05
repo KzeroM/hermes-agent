@@ -45,6 +45,67 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
     return d
 
 
+class _DetachedBrowserProc:
+    def __init__(self, pid, cmdline, *, age_seconds):
+        self.info = {
+            "pid": pid,
+            "name": "chrome",
+            "cmdline": cmdline,
+            "create_time": time.time() - age_seconds,
+        }
+
+
+class TestDetachedChromeProfileReaper:
+    def test_old_root_with_missing_owned_profile_is_reaped(self, fake_tmpdir):
+        import tools.browser_tool as bt
+
+        profile = fake_tmpdir / "agent-browser-chrome-12345678-1234-1234-1234-123456789abc"
+        proc = _DetachedBrowserProc(
+            4242,
+            ["/usr/bin/google-chrome", f"--user-data-dir={profile}", "--headless"],
+            age_seconds=bt.BROWSER_ORPHAN_GRACE_SECONDS + 60,
+        )
+        killed = []
+
+        with patch("psutil.process_iter", return_value=[proc]), \
+             patch(
+                 "tools.process_registry.ProcessRegistry._terminate_host_pid",
+                 side_effect=killed.append,
+             ):
+            bt._reap_orphaned_browser_sessions()
+
+        assert killed == [4242]
+
+    @pytest.mark.parametrize("reason", ["profile_exists", "too_young", "renderer"])
+    def test_ambiguous_or_active_process_is_spared(self, fake_tmpdir, reason):
+        import tools.browser_tool as bt
+
+        profile = fake_tmpdir / "agent-browser-chrome-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        age = bt.BROWSER_ORPHAN_GRACE_SECONDS + 60
+        extra = []
+        if reason == "profile_exists":
+            profile.mkdir()
+        elif reason == "too_young":
+            age = 30
+        elif reason == "renderer":
+            extra = ["--type=renderer"]
+        proc = _DetachedBrowserProc(
+            4343,
+            ["/usr/bin/chromium", f"--user-data-dir={profile}", *extra],
+            age_seconds=age,
+        )
+        killed = []
+
+        with patch("psutil.process_iter", return_value=[proc]), \
+             patch(
+                 "tools.process_registry.ProcessRegistry._terminate_host_pid",
+                 side_effect=killed.append,
+             ):
+            bt._reap_orphaned_browser_sessions()
+
+        assert killed == []
+
+
 class TestReapOrphanedBrowserSessions:
     """Tests for the orphan reaper function."""
 

@@ -1667,6 +1667,11 @@ BROWSER_ORPHAN_REAP_INTERVAL = 300  # seconds
 # Deliberately a large multiple of the inactivity timeout so a legitimately
 # busy session is never touched.
 BROWSER_ORPHAN_GRACE_SECONDS = max(3600, BROWSER_SESSION_INACTIVITY_TIMEOUT * 20)
+_DETACHED_BROWSER_PROFILE_RE = re.compile(
+    r"agent-browser-chrome-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -1932,6 +1937,67 @@ def _socket_dir_idle_seconds(socket_dir: str) -> Optional[float]:
     return max(0.0, time.time() - latest)
 
 
+def _reap_detached_browser_roots(tmpdir: str) -> int:
+    try:
+        import psutil
+    except ImportError:
+        return 0
+
+    tmpdir_key = os.path.normcase(os.path.abspath(tmpdir))
+    reaped = 0
+    try:
+        processes = psutil.process_iter(
+            ["pid", "name", "cmdline", "create_time"]
+        )
+    except (psutil.Error, OSError):
+        return 0
+
+    for process in processes:
+        try:
+            info = process.info
+            cmdline = info.get("cmdline") or []
+            if not cmdline or any(arg.startswith("--type=") for arg in cmdline):
+                continue
+            executable = os.path.basename(cmdline[0]).lower()
+            if "chrome" not in executable and "chromium" not in executable:
+                continue
+            profile_args = [
+                arg.split("=", 1)[1]
+                for arg in cmdline
+                if arg.startswith("--user-data-dir=")
+            ]
+            if len(profile_args) != 1:
+                continue
+            profile = os.path.abspath(profile_args[0])
+            if os.path.normcase(os.path.dirname(profile)) != tmpdir_key:
+                continue
+            if not _DETACHED_BROWSER_PROFILE_RE.fullmatch(
+                os.path.basename(profile)
+            ):
+                continue
+            if os.path.lexists(profile):
+                continue
+            created_at = info.get("create_time")
+            if not isinstance(created_at, (int, float)):
+                continue
+            if time.time() - created_at < BROWSER_ORPHAN_GRACE_SECONDS:
+                continue
+            daemon_pid = info.get("pid")
+            if not isinstance(daemon_pid, int) or daemon_pid <= 0:
+                continue
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry._terminate_host_pid(daemon_pid)
+            logger.info(
+                "Reaped detached browser root PID %d with missing profile %s",
+                daemon_pid,
+                os.path.basename(profile),
+            )
+            reaped += 1
+        except (psutil.Error, OSError, ValueError, TypeError):
+            continue
+    return reaped
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -1958,6 +2024,7 @@ def _reap_orphaned_browser_sessions():
     import glob
 
     tmpdir = _socket_safe_tmpdir()
+    detached_reaped = _reap_detached_browser_roots(tmpdir)
     pattern = os.path.join(tmpdir, "agent-browser-h_*")
     socket_dirs = glob.glob(pattern)
     # Also pick up CDP sessions
@@ -1966,6 +2033,11 @@ def _reap_orphaned_browser_sessions():
     socket_dirs += glob.glob(os.path.join(tmpdir, "agent-browser-hermes_*"))
 
     if not socket_dirs:
+        if detached_reaped:
+            logger.info(
+                "Reaped %d detached browser root(s) from previous run(s)",
+                detached_reaped,
+            )
         return
 
     # Build set of session_names currently tracked by this process (fallback path)
@@ -2077,8 +2149,13 @@ def _reap_orphaned_browser_sessions():
         # Clean up the socket directory
         shutil.rmtree(socket_dir, ignore_errors=True)
 
-    if reaped:
-        logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
+    if reaped or detached_reaped:
+        logger.info(
+            "Reaped %d orphaned browser session(s) and %d detached root(s) "
+            "from previous run(s)",
+            reaped,
+            detached_reaped,
+        )
 
 
 def _browser_cleanup_thread_worker():
